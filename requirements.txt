@@ -1,0 +1,6 @@
+ipykernel
+torch 
+transformers 
+huggingface-hub 
+datasets 
+
