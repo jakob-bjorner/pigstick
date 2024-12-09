@@ -17,7 +17,8 @@ import numpy as np
 import torch
 
 from config import Config, load_config, ModelConfig, DataConfig, TrainingLoopConfig
-from model import Model, generate, generate_prompt, Tokenizer
+from model import Model, generate, generate_prompt
+from tokenizer import Tokenizer
 from dataloader import load_datasets, DataLoader 
 
 
@@ -34,7 +35,13 @@ def main(config_path: str) -> None:
     """
     config = load_config(config_path)
     
-    config.set_seed()
+    # set random seeds
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    torch.cuda.manual_seed_all(config.seed) 
+
+    # set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(config.out_dir, exist_ok=True)
 

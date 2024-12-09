@@ -13,6 +13,14 @@ class ModelConfig(BaseModel):
     pretrained_path: str = "checkpoints/lit-llama/7B/lit-llama.pth"
     tokenizer_path: str = "checkpoints/lit-llama/tokenizer.model"
 
+class TokenizerConfig(BaseModel):
+    """
+    Config for the tokenizer. 
+    """
+    type: str = "sentencepiece"
+    tokenizer_path: str = "checkpoints/lit-llama/tokenizer.model"
+    assert type in ["sentencepiece", "huggingface"], "Tokenizer type must be either sentencepiece or huggingface"
+
 
 class DataConfig(BaseModel):
     """
@@ -48,6 +56,7 @@ class Config(BaseModel):
     """
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
+    tokenizer: TokenizerConfig = Field(default_factory=TokenizerConfig)
     training: TrainingLoopConfig = Field(default_factory=TrainingLoopConfig)
     seed: int = 42
 
@@ -59,16 +68,8 @@ class Config(BaseModel):
     def max_iters(self) -> int:
         return self.model.num_epochs * (self.model.epoch_size // self.model.micro_batch_size)
 
-    def set_seed(self) -> None:
-        """Set random seeds for reproducibility"""
-        import random
-        import numpy as np
-        import torch
         
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        torch.cuda.manual_seed_all(self.seed) 
+
 
 
 def load_config(config_path: str = None) -> Config:
