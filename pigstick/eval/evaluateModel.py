@@ -29,16 +29,22 @@ class Evaluation:
 
         print(f"[INFO] Retrieving evaluation data from datasets file {dataset_file}")
         with open(dataset_file, "r") as input_file:
-            for line in input_file:
+            header = []
+            reader = csv.reader(input_file)
+            for header_line in reader:
+                header = header_line
+            header = [value.strip() for value in header]
+
+            for line in reader:
                 current_dataset = line.strip()
                 print(f"[INFO] Loading dataset {current_dataset}")
 
                 # dataset dictionary
                 dataset_dict = {
-                    "prompt": ,
-                    "code": ,
-                    "unit test values": ,
-                    "dataset": load_dataset(current_dataset)
+                    "prompt": line[header.index("prompt")],
+                    "code": line[header.index("code")],
+                    "unit test values": line[header.index("unit_test_values")],
+                    "dataset": load_dataset(line[header.index("dataset")])
                 }
                 self.eval_data.append(dataset_dict)
 

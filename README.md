@@ -10,7 +10,12 @@ In the root directory of this repo run the following command with your python 3.
 python3 -m pip install -e .
 ```
 
+## Progress Thus Far
 
+There were 3 teams working on various aspects of pigstick - Model & Eval Team, SFT Team, and Reward Model Team
 
+### Model & Eval Team
 
+### SFT Team
 
+### Reward Model Team
