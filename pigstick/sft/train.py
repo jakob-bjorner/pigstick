@@ -10,91 +10,53 @@ import os
 import time
 from functools import partial
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Any, Union
 
+import random
 import numpy as np
 import torch
 
-# support running without installing as a package
-wd = Path(__file__).parent.parent.resolve()
-sys.path.append(str(wd))
-
-from model import generate, generate_prompt
+from config import Config, load_config, ModelConfig, DataConfig, TrainingLoopConfig
+from model import Model, generate, generate_prompt
 from dataloader import load_datasets, DataLoader 
 
-@dataclass
-class TrainingConfig:
-    # Training loop settings
-    instruction_tuning: bool = True
-    eval_interval: int = 1000
-    save_interval: int = 1000
-    eval_iters: int = 100
-    log_interval: int = 100
-    devices: int = 1
-    
-    # Model hyperparameters
-    learning_rate: float = 3e-5
-    batch_size: int = 128
-    micro_batch_size: int = 8
-    epoch_size: int = 30000
-    num_epochs: int = 3
-    weight_decay: float = 0.0
-    block_size: int = 512
-    warmup_iters: int = 100
-    # Derived properties
-    @property
-    def gradient_accumulation_iters(self) -> int:
-        return self.batch_size // self.micro_batch_size
-    
-    @property
-    def max_iters(self) -> int:
-        return self.num_epochs * (self.epoch_size // self.micro_batch_size) // self.devices
-    
-    def __post_init__(self):
-        assert self.gradient_accumulation_iters > 0, "Batch size must be larger than micro batch size"
 
-
-def main(
-    data_dir: str = "data/alpaca",
-    pretrained_path: str = "checkpoints/lit-llama/7B/lit-llama.pth",
-    out_dir: str = "out/full/alpaca",
-    config: Optional[TrainingConfig] = None,
-):
+def logging(msg: str) -> None:
     """ 
-    
+    Log functions for training. For now, just print to console. 
     """
-    if config is None:
-        config = TrainingConfig()
+    print(msg)
+
+
+def main(config_path: str) -> None:
+    """ 
+    Basic training loop for SFT. 
+    """
+    config = load_config(config_path)
     
-    fabric = L.Fabric(accelerator="cuda", 
-                      devices=config.devices, 
-                      precision="bf16-mixed")
-    fabric.launch()
-    fabric.seed_everything(1337)
+    config.set_seed()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    os.makedirs(config.out_dir, exist_ok=True)
 
-    os.makedirs(out_dir, exist_ok=True)
+    # initialize training 
+    train_data, val_data = load_datasets(data_dir=config.data_dir)
+    
+    # load model
+    if config.pretrained_path:
+        checkpoint = torch.load(config.pretrained_path)
+        model = Model(config.model).to(device).bfloat16()
+        model.load_state_dict(checkpoint, strict=False)
+    else:
+        model = Model(config.model).to(device).bfloat16()
 
-    train_data, val_data = load_datasets(data_dir=data_dir)
+    # optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    
+    # train
+    train(model, optimizer, train_data, val_data, config.train)
 
-    config.block_size = config.block_size
-
-    checkpoint = torch.load(pretrained_path)  
-
-    with fabric.device:
-        torch.set_default_tensor_type(torch.HalfTensor)
-        model = LLaMA(config).bfloat16()
-        torch.set_default_tensor_type(torch.FloatTensor)
-        model.load_state_dict(checkpoint, strict=False) 
-
-    model = fabric.setup_module(model)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, foreach=False)
-    optimizer = fabric.setup_optimizers(optimizer)
-
-    train(fabric, model, optimizer, train_data, val_data, out_dir, config)
-
-    # Save the final checkpoint at the end of training
-    save_model_checkpoint(fabric, model, os.path.join(out_dir, "lit-llama-full-finetuned.pth"))
+    # Save final checkpoint
+    torch.save(model.state_dict(), os.path.join(config.out_dir, "model-finetuned.pth"))
 
 
 def train(
@@ -102,8 +64,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     train_data: np.ndarray,
     val_data: np.ndarray,
-    out_dir: str,
-    config: TrainingConfig,
+    config: TrainingLoopConfig,
 ) -> None:
     """
     The training loop.
@@ -112,10 +73,9 @@ def train(
     """
     step_count = 0
     model.train()
+    device = next(model.parameters()).device
 
     for iter_num in range(config.max_iters):
-
-        is_accumulating = (iter_num + 1) % config.gradient_accumulation_iters != 0
 
         if step_count <= config.warmup_iters:
             # linear warmup
@@ -125,32 +85,53 @@ def train(
 
         t0 = time.time()
         
-        input_ids, targets = get_batch(fabric, train_data)
-        with fabric.no_backward_sync(model, enabled=is_accumulating):
-            logits = model(input_ids)
-            loss = loss_fn(logits, targets)
-            fabric.backward(loss / config.gradient_accumulation_iters)
+        input_ids, targets = get_batch(train_data, config, device)
+        
+        logits = model(input_ids)
+        loss = loss_fn(logits, targets)
+        loss = loss / config.gradient_accumulation_iters
+        
+        loss.backward()
 
-        if not is_accumulating:
+        if (iter_num + 1) % config.gradient_accumulation_iters == 0:
             optimizer.step()
             optimizer.zero_grad()
             step_count += 1
 
             if step_count % config.eval_interval == 0:
-                val_loss = validate(fabric, model, val_data, config)
-                fabric.print(f"step {iter_num}: val loss {val_loss:.4f}")
+                val_loss = validate(model, val_data, config)
+                print(f"step {iter_num}: val loss {val_loss:.4f}")
 
             if step_count % config.save_interval == 0:
-                print(f"Saving weights to {out_dir}")
-                save_model_checkpoint(fabric, model, os.path.join(out_dir, f"iter-{iter_num:06d}-ckpt.pth"))
+                print(f"Saving weights to {config.out_dir}")
+                torch.save(model.state_dict(), 
+                          os.path.join(config.out_dir, f"iter-{iter_num:06d}-ckpt.pth"))
 
         dt = time.time() - t0
         if iter_num % config.log_interval == 0:
-            fabric.print(f"iter {iter_num}: loss {loss.item():.4f}, time: {dt*1000:.2f}ms")
+            print(f"iter {iter_num}: loss {loss.item():.4f}, time: {dt*1000:.2f}ms")
 
 
-def generate_response(model, instruction):
-    tokenizer = Tokenizer("checkpoints/lit-llama/tokenizer.model")
+def train_step(model, optimizer, train_data, config):
+    pass
+
+
+def train_epoch(model, optimizer, train_data, config):
+    pass
+
+
+def train_epoch_end(model, optimizer, train_data, config):
+    pass
+
+
+
+
+
+def generate_response(model, instruction, config):
+    """
+    Generate a response from the model. 
+    """
+    tokenizer = Tokenizer(config.tokenizer_path)
     sample = {"instruction": instruction, "input": ""}
     prompt = instruction
     if config.instruction_tuning:
@@ -168,29 +149,37 @@ def generate_response(model, instruction):
 
 
 @torch.no_grad()
-def validate(fabric: L.Fabric, model: torch.nn.Module, val_data: np.ndarray, config: TrainingConfig) -> torch.Tensor:
-    fabric.print("Validating ...")
+def validate(model: torch.nn.Module, 
+             val_data: np.ndarray, 
+             config: TrainingConfig) -> float:
+    print("Validating ...")
     model.eval()
+    device = next(model.parameters()).device
     losses = torch.zeros(config.eval_iters)
+    
     for k in range(config.eval_iters):
-        input_ids, targets = get_batch(fabric, val_data)
+        input_ids, targets = get_batch(val_data, config, device)
         logits = model(input_ids)
         loss = loss_fn(logits, targets)
         losses[k] = loss.item()
+    
     out = losses.mean()
 
     # produce an example:
     instruction = "Recommend a movie for me to watch during the weekend and explain the reason."
     
     output = generate_response(model, instruction)
-    fabric.print(instruction)
-    fabric.print(output)
+    print(instruction)
+    print(output)
 
     model.train()
     return out.item()
 
 
 def loss_fn(logits, targets):
+    """
+    Compute the loss for the model. 
+    """
     # shift the targets such that output n predicts token n+1
     logits = logits[..., :-1, :].contiguous()
     targets = targets[..., 1:].contiguous()
@@ -198,7 +187,10 @@ def loss_fn(logits, targets):
     return loss
 
 
-def get_batch(fabric: L.Fabric, data: list):
+def get_batch(data: list, config: TrainingConfig, device: torch.device):
+    """
+    Get a batch of data from the dataset. 
+    """
     ix = torch.randint(len(data), (config.micro_batch_size,))
 
     input_ids = [data[i]["input_ids"].type(torch.int64) for i in ix]
@@ -213,11 +205,13 @@ def get_batch(fabric: L.Fabric, data: list):
 
     x = torch.stack([pad_right(x, pad_id=0) for x in input_ids])
     y = torch.stack([pad_right(x, pad_id=-1) for x in labels])
-    x, y = fabric.to_device((x.pin_memory(), y.pin_memory()))
-    return x, y
+    return x.to(device), y.to(device)
 
 
 def load_datasets(data_dir):
+    """
+    Load the datasets. 
+    """
     train_data = torch.load(os.path.join(data_dir, "train.pt"))
     val_data = torch.load(os.path.join(data_dir, "test.pt"))
     return train_data, val_data
