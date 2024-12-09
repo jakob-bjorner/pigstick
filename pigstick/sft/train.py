@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from config import Config, load_config, ModelConfig, DataConfig, TrainingLoopConfig
-from model import Model, generate, generate_prompt
+from model import Model, generate, generate_prompt, Tokenizer
 from dataloader import load_datasets, DataLoader 
 
 
@@ -48,6 +48,9 @@ def main(config_path: str) -> None:
         model.load_state_dict(checkpoint, strict=False)
     else:
         model = Model(config.model).to(device).bfloat16()
+
+    # load tokenizer
+    tokenizer = Tokenizer(config.tokenizer_path)
 
     # optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
@@ -112,26 +115,11 @@ def train(
             print(f"iter {iter_num}: loss {loss.item():.4f}, time: {dt*1000:.2f}ms")
 
 
-def train_step(model, optimizer, train_data, config):
-    pass
 
-
-def train_epoch(model, optimizer, train_data, config):
-    pass
-
-
-def train_epoch_end(model, optimizer, train_data, config):
-    pass
-
-
-
-
-
-def generate_response(model, instruction, config):
+def generate_response(model, tokenizer, instruction, config):
     """
     Generate a response from the model. 
     """
-    tokenizer = Tokenizer(config.tokenizer_path)
     sample = {"instruction": instruction, "input": ""}
     prompt = instruction
     if config.instruction_tuning:
@@ -149,9 +137,13 @@ def generate_response(model, instruction, config):
 
 
 @torch.no_grad()
-def validate(model: torch.nn.Module, 
+def validate(model: torch.nn.Module,
+             tokenizer: Tokenizer,
              val_data: np.ndarray, 
-             config: TrainingConfig) -> float:
+             config: TrainingLoopConfig) -> float:
+    """
+    Validate the model. 
+    """
     print("Validating ...")
     model.eval()
     device = next(model.parameters()).device
@@ -168,7 +160,7 @@ def validate(model: torch.nn.Module,
     # produce an example:
     instruction = "Recommend a movie for me to watch during the weekend and explain the reason."
     
-    output = generate_response(model, instruction)
+    output = generate_response(model, tokenizer, instruction, config)
     print(instruction)
     print(output)
 
@@ -187,7 +179,7 @@ def loss_fn(logits, targets):
     return loss
 
 
-def get_batch(data: list, config: TrainingConfig, device: torch.device):
+def get_batch(data: list, config: TrainingLoopConfig, device: torch.device):
     """
     Get a batch of data from the dataset. 
     """
@@ -208,22 +200,11 @@ def get_batch(data: list, config: TrainingConfig, device: torch.device):
     return x.to(device), y.to(device)
 
 
-def load_datasets(data_dir):
-    """
-    Load the datasets. 
-    """
-    train_data = torch.load(os.path.join(data_dir, "train.pt"))
-    val_data = torch.load(os.path.join(data_dir, "test.pt"))
-    return train_data, val_data
-
-
 if __name__ == "__main__": 
     import argparse
     parser = argparse.ArgumentParser(description='LLaMA SFT Training')
-    parser.add_argument('--data_dir', type=str, default="data/alpaca")
-    parser.add_argument('--pretrained_path', type=str, default="checkpoints/lit-llama/7B/lit-llama.pth")
-    parser.add_argument('--out_dir', type=str, default="out/full/alpaca")
-    
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to the config file")
     args = parser.parse_args()
-    config = TrainingConfig()  # You can add CLI args to override config values if needed
-    main(data_dir=args.data_dir, pretrained_path=args.pretrained_path, out_dir=args.out_dir, config=config)
+
+    config = load_config(args.config)  
+    main(config=config)
