@@ -16,6 +16,21 @@ There were 3 teams working on various aspects of pigstick - Model & Eval Team, S
 
 ### Model & Eval Team
 
+Progress
+* Evaluation suite to standardize MBPP and HumanEval :`pigstick/eval`
+* Language model suite: `pigstick/lm`
+* End-to-end pipeline: load `codellama-7b` + multinomial sampling 
+
+Next steps
+* Getting the pipeline to work end-to-end (in `pigstick/lm/test.py`)
+	* Output generated code to Python file (in an experimental directory) 
+	* Run the generated code to check if pass given unit tests 
+	* Aggregate results for pass@k metrics 
+	* Implement pass@k 
+* Refactor the code for proper abstraction
+	* Refactor Decoding Strategies
+	* Refactor Evaluation Suite 
+
 ### SFT Team 
 
 All the work for the SFT loop is in the `pigstick/sft` directory. 
