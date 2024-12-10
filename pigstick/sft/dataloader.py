@@ -2,17 +2,72 @@
 Dataloader for SFT pipeline. 
 
 """
-from typing import Tuple
-
 import numpy as np
+import pandas as pd
+from typing import Tuple, List, Optional
+from datasets import load_dataset
 
-
-
-def load_datasets(data_dir: str) -> Tuple[np.ndarray, np.ndarray]: 
+def load_datasets(
+    data_dir: str, 
+    datasets: Optional[List[str]] = None
+) -> Tuple[np.ndarray, np.ndarray]: 
     """ 
     Load datasets. 
     """
-    pass
+    # Available datasets and their loading methods
+    dataset_loaders = {
+        'ultrainteract': lambda: _load_ultrainteract(),
+        'github': lambda: _load_github(),
+        'bcb': lambda: _load_bcb()
+    }
+    
+    # Determine which datasets to load
+    if datasets is None:
+        datasets = list(dataset_loaders.keys())
+    
+    # Validate input
+    invalid_datasets = set(datasets) - set(dataset_loaders.keys())
+    if invalid_datasets:
+        raise ValueError(f"Invalid dataset names: {invalid_datasets}. "
+                         f"Valid options are: {list(dataset_loaders.keys())}")
+    
+    # Load specified datasets
+    loaded_dataframes = []
+    for dataset_name in datasets:
+        df = dataset_loaders[dataset_name]()
+        loaded_dataframes.append(df)
+    
+    df_combined = pd.concat(loaded_dataframes, ignore_index=True)
+    
+    # Convert to numpy arrays
+    texts = df_combined['content'].values
+    
+    return texts, labels
+
+def _load_ultrainteract() -> pd.DataFrame:
+    """Load UltraInteract dataset"""
+    df = pd.read_parquet(
+        "https://huggingface.co/datasets/openbmb/UltraInteract_sft/resolve/main/0000_sft.parquet"
+    )
+    df['content'] = df['instruction'] + ' ' + df['response']
+    return df[['content']]
+
+def _load_github() -> pd.DataFrame:
+    """Load GitHub Python code dataset"""
+    ds_github = load_dataset("codeparrot/github-code", streaming=True, split="train", languages=["Python"])
+    ds_github_20p = ds_github.shuffle(seed=42).take(30000)
+    df_github = pd.DataFrame(ds_github_20p)
+    df_github = df_github[df_github["language"] == "Python"]
+    df_github = df_github.rename(columns={"code": "content"})
+    return df_github[['content']]
+
+def _load_bcb() -> pd.DataFrame:
+    """Load BigCodeBench dataset"""
+    df = pd.read_parquet(
+        "https://huggingface.co/datasets/bigcode/bigcodebench/resolve/main/data/v0.1.0-00000-of-00001.parquet"
+    )
+    df['content'] = df['instruct_prompt'] + ' ' + df['canonical_solution']
+    return df[['content']]
 
 
 
