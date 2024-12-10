@@ -8,6 +8,7 @@ import os
 
 import transformers
 import torch
+import subprocess
 
 from typing import Tuple
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -40,12 +41,15 @@ def format_python_output(output):
     # format generated code 
     # generated_code = output["prompt"] + output["code"]
     generated_code = output["prompt"] + output["gold_code"]
-    print(f"generated_code={generated_code}")
+    # print(f"generated_code={generated_code}")
 
     # format unit test TODO 
-    print(f"unit test={output['unit test values']}")
+    # print(f"unit test={output['unit test values']}")
 
     # concatenate
+    python_output = generated_code + output['unit test values'] + f"check({output['function_name']})" 
+    print(f"python output={python_output}")
+    return python_output
 
 def evaluate(outputs):
     
@@ -54,12 +58,28 @@ def evaluate(outputs):
 
     for i, output in enumerate(outputs): 
 
-        # construct python string TODO
-        format_python_output(output)
+        # construct python string 
+        python_output = format_python_output(output)
 
-        # output to path TODO 
+        # output to path 
+        python_filepath = os.path.join(exp_dir, f"file_{i}.py") 
+        with open(python_filepath, "w", encoding="utf-8") as f:
+            f.write(python_output)
 
-        # run python subprocess TODO 
+        # run python subprocess TODO
+        result = subprocess.run(
+            ["python", python_filepath],
+            capture_output=True,
+            text=True
+        )
+        print("Output:")
+        print(result.stdout)
+        if result.stderr: # failure case 
+            print("Errors:")
+            print(result.stderr) 
+
+        else: # correct case
+            pass
     
         # pass into code at k TODO
 
@@ -85,28 +105,17 @@ def main():
     max_examples = 1
     test_dataset = []
     print(dataset.select(range(max_examples))[0].keys())
-    for i, example in enumerate(dataset.select(range(max_examples))):
-        # Extract the instructions
-        task_name = example['task_id']
-        prompt = example['prompt']
-        # print(f"\n=== Task {task_name} ===")
-        # print(f"Instruction:\n{prompt}")
-
-        test_dataset.append({
-            "prompt": prompt,
-            "code": example['canonical_solution'],
-            "unit test values": example['test'],
-        })
 
     # generate outputs
     outputs = [] 
-    for example in test_dataset: 
+    for i, example in enumerate(dataset.select(range(max_examples))):
         output = lm.generate(prompt=example["prompt"], decoding_config=decoding_config)
         outputs.append({
             "prompt": example["prompt"], 
-            "gold_code": example["code"],
+            "gold_code": example["canonical_solution"],
             "generated_code": output,
-            "unit test values": example['unit test values'], 
+            "unit test values": example['test'], 
+            "function_name": example["entry_point"]
         })
     print(outputs[0])
 
